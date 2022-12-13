@@ -5,6 +5,9 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
+import numpy as np
+
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -113,3 +116,128 @@ class ModelBuilder(nn.Module):
             outputs['total_loss'] += cfg.TRAIN.MASK_WEIGHT * mask_loss
             outputs['mask_loss'] = mask_loss
         return outputs
+
+
+
+
+class SiamRPNTemplateMaker(nn.Module):
+    def __init__(self, model):
+        super(SiamRPNTemplateMaker, self).__init__()
+
+        # build backbone
+        self.featureExtract = model.backbone.features
+
+        self.conv_reg1 = model.rpn_head.loc.conv_kernel
+        self.conv_cls1 = model.rpn_head.cls.conv_kernel
+
+
+    def forward(self, x):
+
+        x_perm = x.permute((0, 3, 1, 2))
+        x_f = self.featureExtract(x_perm)
+        return x_f, self.conv_reg1(x_f), self.conv_cls1(x_f)
+
+
+
+class AnchorLayer(nn.Module):
+    def __init__(self, anc, mem_len):
+        super(AnchorLayer, self).__init__()
+        
+        anc_tiled = np.tile(anc, (mem_len, 1, 1))
+        self.anchor0 = nn.Parameter( torch.from_numpy(anc_tiled[:, 0, :]) )
+        self.anchor1 = nn.Parameter( torch.from_numpy(anc_tiled[:, 1, :]) )
+        self.anchor2 = nn.Parameter( torch.from_numpy(anc_tiled[:, 2, :]) )
+        self.anchor3 = nn.Parameter( torch.from_numpy(anc_tiled[:, 3, :]) )
+
+    def forward(self, delta):
+      
+        delta_0_out = delta[:, 0, :] * self.anchor2 + self.anchor0
+        delta_1_out = delta[:, 1, :] * self.anchor3 + self.anchor1
+        delta_2_out = torch.exp(delta[:, 2, :]) * self.anchor2
+        delta_3_out = torch.exp(delta[:, 3, :]) * self.anchor3
+
+        return delta_0_out, delta_1_out, delta_2_out, delta_3_out
+
+
+class SiamRPNTHORForward(nn.Module):
+    def __init__(self, model, anc, mem_len):
+        super(SiamRPNTHORForward, self).__init__()
+
+        self.mem_len = mem_len
+        # build backbone
+        self.featureExtract = model.backbone.features
+
+        self.conv_reg2 = model.rpn_head.loc.conv_search
+        self.conv_cls2 = model.rpn_head.cls.conv_search
+
+        
+        self.conv_reg_corr = nn.ModuleList([nn.Conv2d(256, 256, 4, groups=256, bias=False) for _ in range(mem_len)])
+        self.conv_cls_corr = nn.ModuleList([nn.Conv2d(256, 256, 4, groups=256, bias=False) for _ in range(mem_len)])
+
+        self.reg_head = model.rpn_head.loc.head
+        self.cls_head = model.rpn_head.cls.head
+        
+        self.anchors = AnchorLayer(anc, mem_len)
+
+
+    def forward(self, x):
+        x_perm = x.permute((0, 3, 1, 2))
+        x_f = self.featureExtract(x_perm)
+
+        conv_reg = self.conv_reg2(x_f)
+        conv_cls = self.conv_cls2(x_f)
+
+        reg_corr = [cor(conv_reg) for cor in self.conv_reg_corr]
+        cls_corr = [cor(conv_cls) for cor in self.conv_cls_corr]
+        
+        reg_corr = torch.cat(reg_corr)
+        cls_corr = torch.cat(cls_corr)
+
+        #cls_corr = cls_corr.view(self.mem_len, cls_corr.shape[1]//self.mem_len, cls_corr.shape[2], cls_corr.shape[3])
+        #reg_corr = reg_corr.view(self.mem_len, reg_corr.shape[1]//self.mem_len, reg_corr.shape[2], reg_corr.shape[3])
+        
+        cls = self.cls_head( cls_corr )
+        reg = self.reg_head( reg_corr )
+
+        score = F.softmax( cls.view(self.mem_len, 2, -1), dim=1)
+        delta = reg.view(self.mem_len, 4, -1)
+        delta_0_out, delta_1_out, delta_2_out, delta_3_out = self.anchors(delta)
+
+        return delta_0_out, delta_1_out, delta_2_out, delta_3_out, score[:, 1, :]
+
+
+class SiamRPNForward(nn.Module):
+    def __init__(self, model, anc):
+        super(SiamRPNForward, self).__init__()
+
+        # build backbone
+        self.featureExtract = model.backbone.features
+
+        self.conv_reg2 = model.rpn_head.loc.conv_search
+        self.conv_cls2 = model.rpn_head.cls.conv_search
+
+        
+        self.conv_reg_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
+        self.conv_cls_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
+
+        self.reg_head = model.rpn_head.loc.head
+        self.cls_head = model.rpn_head.cls.head
+        
+        self.anchors = AnchorLayer(anc, 1)
+
+
+    def forward(self, x):
+        x_perm = x.permute((0, 3, 1, 2))
+        x_f = self.featureExtract(x_perm)
+        
+        cls = self.cls_head( self.conv_cls_corr( self.conv_cls2(x_f) ) )
+        reg = self.reg_head( self.conv_reg_corr( self.conv_reg2(x_f) ) )
+
+        score = F.softmax( cls.view(2, -1), dim=0)
+
+        delta = reg.view(1, 4, -1)
+
+        delta_0_out, delta_1_out, delta_2_out, delta_3_out = self.anchors(delta)
+
+
+        return delta_0_out, delta_1_out, delta_2_out, delta_3_out, score[1, :]

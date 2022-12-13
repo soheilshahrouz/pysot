@@ -13,7 +13,7 @@ import torch
 import numpy as np
 
 from pysot.core.config import cfg
-from pysot.models.model_builder import ModelBuilder
+from pysot.models.model_builder import ModelBuilder, SiamRPNTemplateMaker, SiamRPNForward, SiamRPNTHORForward
 from pysot.tracker.tracker_builder import build_tracker
 from pysot.utils.bbox import get_axis_aligned_bbox
 from pysot.utils.model_load import load_pretrain
@@ -52,6 +52,45 @@ def main():
     # build tracker
     tracker = build_tracker(model)
 
+    # Export Template Maker ONNX Model
+    temp_model = SiamRPNTemplateMaker(model)
+
+    dummy_input = torch.randn(1, 127, 127, 3, device="cuda")
+    input_names  = [ "template_maker_input" ]
+    output_names = [ "template_maker_kernel_output", "template_maker_reg_output", "template_maker_cls_output" ]
+
+    torch.onnx.export(temp_model, dummy_input, "SiamRPN_Template_Maker.onnx", export_params=True,
+        verbose=True, input_names=input_names, output_names=output_names)
+
+
+    # Export Simple SiamRPN Forward Model
+    dummy_input = torch.randn(1, 287, 287, 3, device="cuda")
+    simp_forw_model = SiamRPNForward(model, np.transpose(tracker.anchors)).cuda()
+
+    input_names  = [ "forward_input" ]
+    output_names = [ "forward_delta0_output", "forward_delta1_output", "forward_delta2_output", "forward_delta3_output", "forward_cls_output" ]
+
+    torch.onnx.export(simp_forw_model, dummy_input, "SiamRPN_Forward.onnx", export_params=True,
+        verbose=True, input_names=input_names, output_names=output_names)
+
+
+    # Export THOR SiamRPN Forward Model
+    dummy_input = torch.randn(1, 287, 287, 3, device="cuda")
+    for mem_len in range(5, 16):
+        forw_model = SiamRPNTHORForward(model, np.transpose(tracker.anchors), mem_len).cuda()
+
+        input_names  = [ "forward_input" ]
+        output_names = [ "forward_delta0_output", "forward_delta1_output", "forward_delta2_output", "forward_delta3_output", "forward_cls_output" ]
+
+        torch.onnx.export(forw_model, dummy_input, "THORSiamRPN_Forward.onnx", export_params=True,
+            verbose=True, input_names=input_names, output_names=output_names)
+
+
+    exit()
+
+    # build tracker
+    tracker = build_tracker(model)
+
     # create dataset
     dataset = DatasetFactory.create_dataset(name=args.dataset,
                                             dataset_root=dataset_root,
@@ -73,9 +112,9 @@ def main():
             for idx, (img, gt_bbox) in enumerate(video):
                 if len(gt_bbox) == 4:
                     gt_bbox = [gt_bbox[0], gt_bbox[1],
-                       gt_bbox[0], gt_bbox[1]+gt_bbox[3]-1,
-                       gt_bbox[0]+gt_bbox[2]-1, gt_bbox[1]+gt_bbox[3]-1,
-                       gt_bbox[0]+gt_bbox[2]-1, gt_bbox[1]]
+                    gt_bbox[0], gt_bbox[1]+gt_bbox[3]-1,
+                    gt_bbox[0]+gt_bbox[2]-1, gt_bbox[1]+gt_bbox[3]-1,
+                    gt_bbox[0]+gt_bbox[2]-1, gt_bbox[1]]
                 tic = cv2.getTickCount()
                 if idx == frame_counter:
                     cx, cy, w, h = get_axis_aligned_bbox(np.array(gt_bbox))
@@ -111,7 +150,7 @@ def main():
                     else:
                         bbox = list(map(int, pred_bbox))
                         cv2.rectangle(img, (bbox[0], bbox[1]),
-                                      (bbox[0]+bbox[2], bbox[1]+bbox[3]), (0, 255, 255), 3)
+                                    (bbox[0]+bbox[2], bbox[1]+bbox[3]), (0, 255, 255), 3)
                     cv2.putText(img, str(idx), (40, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
                     cv2.putText(img, str(lost_number), (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     cv2.imshow(video.name, img)
@@ -169,9 +208,9 @@ def main():
                     gt_bbox = list(map(int, gt_bbox))
                     pred_bbox = list(map(int, pred_bbox))
                     cv2.rectangle(img, (gt_bbox[0], gt_bbox[1]),
-                                  (gt_bbox[0]+gt_bbox[2], gt_bbox[1]+gt_bbox[3]), (0, 255, 0), 3)
+                                (gt_bbox[0]+gt_bbox[2], gt_bbox[1]+gt_bbox[3]), (0, 255, 0), 3)
                     cv2.rectangle(img, (pred_bbox[0], pred_bbox[1]),
-                                  (pred_bbox[0]+pred_bbox[2], pred_bbox[1]+pred_bbox[3]), (0, 255, 255), 3)
+                                (pred_bbox[0]+pred_bbox[2], pred_bbox[1]+pred_bbox[3]), (0, 255, 255), 3)
                     cv2.putText(img, str(idx), (40, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
                     cv2.imshow(video.name, img)
                     cv2.waitKey(1)
