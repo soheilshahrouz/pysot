@@ -170,31 +170,37 @@ class SiamRPNTHORForward(nn.Module):
         self.conv_reg2 = model.rpn_head.loc.conv_search
         self.conv_cls2 = model.rpn_head.cls.conv_search
 
-        
-        self.conv_reg_corr = nn.ModuleList([nn.Conv2d(256, 256, 4, groups=256, bias=False) for _ in range(mem_len)])
-        self.conv_cls_corr = nn.ModuleList([nn.Conv2d(256, 256, 4, groups=256, bias=False) for _ in range(mem_len)])
-
         self.reg_head = model.rpn_head.loc.head
         self.cls_head = model.rpn_head.cls.head
         
         self.anchors = AnchorLayer(anc, mem_len)
 
 
-    def forward(self, x):
+    def forward(self, x, z_reg, z_cls):
+
         x_perm = x.permute((0, 3, 1, 2))
         x_f = self.featureExtract(x_perm)
 
-        conv_reg = self.conv_reg2(x_f)
-        conv_cls = self.conv_cls2(x_f)
+        c_x = self.conv_reg2(x_f)
+        r_x = self.conv_cls2(x_f)
 
-        reg_corr = [cor(conv_reg) for cor in self.conv_reg_corr]
-        cls_corr = [cor(conv_cls) for cor in self.conv_cls_corr]
+        c_x = F.unfold(c_x.reshape(256, 1, 24, 24), (4, 4))
+        r_x = F.unfold(r_x.reshape(256, 1, 24, 24), (4, 4))
+
+        c_x = c_x.permute((2, 0, 1))
+        r_x = r_x.permute((2, 0, 1))
+
+        z_reg = z_reg.reshape(self.mem_len, 256, 4*4)
+        z_cls = z_cls.reshape(self.mem_len, 256, 4*4)
+
+        z_reg = list(torch.split(z_reg, 1))
+        z_cls = list(torch.split(z_cls, 1))
+
+        r_out = [torch.mul(r_x, zr).sum(2).permute((1, 0)).reshape(1, 256, 21, 21) for zr in z_reg]
+        c_out = [torch.mul(c_x, zc).sum(2).permute((1, 0)).reshape(1, 256, 21, 21) for zc in z_cls]
         
-        reg_corr = torch.cat(reg_corr)
-        cls_corr = torch.cat(cls_corr)
-
-        #cls_corr = cls_corr.view(self.mem_len, cls_corr.shape[1]//self.mem_len, cls_corr.shape[2], cls_corr.shape[3])
-        #reg_corr = reg_corr.view(self.mem_len, reg_corr.shape[1]//self.mem_len, reg_corr.shape[2], reg_corr.shape[3])
+        reg_corr = torch.cat(r_out)
+        cls_corr = torch.cat(c_out)
         
         cls = self.cls_head( cls_corr )
         reg = self.reg_head( reg_corr )
@@ -215,10 +221,6 @@ class SiamRPNForward(nn.Module):
 
         self.conv_reg2 = model.rpn_head.loc.conv_search
         self.conv_cls2 = model.rpn_head.cls.conv_search
-
-        
-        # self.conv_reg_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
-        # self.conv_cls_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
 
         self.reg_head = model.rpn_head.loc.head
         self.cls_head = model.rpn_head.cls.head
@@ -248,9 +250,6 @@ class SiamRPNForward(nn.Module):
 
         reg = self.reg_head(r_out)
         cls = self.cls_head(c_out)
-        
-        # cls = self.cls_head( self.conv_cls_corr( self.conv_cls2(x_f) ) )
-        # reg = self.reg_head( self.conv_reg_corr( self.conv_reg2(x_f) ) )
 
         score = F.softmax( cls.view(2, -1), dim=0)
 

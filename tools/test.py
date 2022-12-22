@@ -76,16 +76,18 @@ def main():
         verbose=True, input_names=input_names, output_names=output_names)
 
 
-    # # Export THOR SiamRPN Forward Model
-    # dummy_input = torch.randn(1, 287, 287, 3, device="cpu")
-    # for mem_len in range(5, 16):
-    #     forw_model = SiamRPNTHORForward(model, np.transpose(tracker.anchors), mem_len)
+    # Export THOR SiamRPN Forward Model
+    dummy_input = torch.randn(1, 287, 287, 3, device="cpu")
+    for mem_len in range(5, 16):
+        dummy_reg   = torch.randn(mem_len, 256, 4, 4, device="cpu")
+        dummy_cls   = torch.randn(mem_len, 256, 4, 4, device="cpu")
+        forw_model = SiamRPNTHORForward(model, np.transpose(tracker.anchors), mem_len)
 
-    #     input_names  = [ "forward_input" ]
-    #     output_names = [ "forward_delta0_output", "forward_delta1_output", "forward_delta2_output", "forward_delta3_output", "forward_cls_output" ]
+        input_names  = [ "forward_input", "forward_reg", "forward_cls" ]
+        output_names = [ "forward_delta0_output", "forward_delta1_output", "forward_delta2_output", "forward_delta3_output", "forward_cls_output" ]
 
-    #     torch.onnx.export(forw_model, dummy_input, "THORSiamRPN_Forward.onnx", export_params=True,
-    #         verbose=True, input_names=input_names, output_names=output_names)
+        torch.onnx.export(forw_model, (dummy_input, dummy_reg, dummy_cls), "THORSiamRPN_Forward" + str(mem_len) + ".onnx", export_params=True,
+            verbose=True, input_names=input_names, output_names=output_names)
 
 
     exit()
