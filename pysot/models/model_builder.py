@@ -217,8 +217,8 @@ class SiamRPNForward(nn.Module):
         self.conv_cls2 = model.rpn_head.cls.conv_search
 
         
-        self.conv_reg_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
-        self.conv_cls_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
+        # self.conv_reg_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
+        # self.conv_cls_corr = nn.Conv2d(256, 256, 4, groups=256, bias=False)
 
         self.reg_head = model.rpn_head.loc.head
         self.cls_head = model.rpn_head.cls.head
@@ -226,12 +226,31 @@ class SiamRPNForward(nn.Module):
         self.anchors = AnchorLayer(anc, 1)
 
 
-    def forward(self, x):
+    def forward(self, x, z_reg, z_cls):
+
         x_perm = x.permute((0, 3, 1, 2))
         x_f = self.featureExtract(x_perm)
+
+        c_x = self.conv_cls2(x_f)
+        r_x = self.conv_reg2(x_f)
+
+        c_x = F.unfold(c_x.reshape(256, 1, 24, 24), (4, 4))
+        r_x = F.unfold(r_x.reshape(256, 1, 24, 24), (4, 4))
+
+        c_x = c_x.permute((2, 0, 1))
+        r_x = r_x.permute((2, 0, 1))
+
+        z_reg = z_reg.reshape(256, 4*4)
+        z_cls = z_cls.reshape(256, 4*4)
+
+        r_out = torch.mul(r_x, z_reg).sum(2).permute((1, 0)).reshape(1, 256, 21, 21)
+        c_out = torch.mul(c_x, z_cls).sum(2).permute((1, 0)).reshape(1, 256, 21, 21)
+
+        reg = self.reg_head(r_out)
+        cls = self.cls_head(c_out)
         
-        cls = self.cls_head( self.conv_cls_corr( self.conv_cls2(x_f) ) )
-        reg = self.reg_head( self.conv_reg_corr( self.conv_reg2(x_f) ) )
+        # cls = self.cls_head( self.conv_cls_corr( self.conv_cls2(x_f) ) )
+        # reg = self.reg_head( self.conv_reg_corr( self.conv_reg2(x_f) ) )
 
         score = F.softmax( cls.view(2, -1), dim=0)
 
