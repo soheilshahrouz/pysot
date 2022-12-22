@@ -181,8 +181,8 @@ class SiamRPNTHORForward(nn.Module):
         x_perm = x.permute((0, 3, 1, 2))
         x_f = self.featureExtract(x_perm)
 
-        c_x = self.conv_reg2(x_f)
-        r_x = self.conv_cls2(x_f)
+        r_x = self.conv_reg2(x_f)
+        c_x = self.conv_cls2(x_f)
 
         c_x = F.unfold(c_x.reshape(256, 1, 24, 24), (4, 4))
         r_x = F.unfold(r_x.reshape(256, 1, 24, 24), (4, 4))
